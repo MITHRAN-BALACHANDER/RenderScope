@@ -1,5 +1,5 @@
 /**
- * FrameDoctor — Content Script / Profiler (content/profiler.js)
+ * RenderScope — Content Script / Profiler (content/profiler.js)
  *
  * EXECUTION CONTEXT: The inspected webpage (document_start).
  *
@@ -27,8 +27,8 @@
   'use strict';
 
   // ─── Guard: run once ────────────────────────────────────────────────────────
-  if (window.__FrameDoctorActive) return;
-  window.__FrameDoctorActive = true;
+  if (window.__RenderScopeActive) return;
+  window.__RenderScopeActive = true;
 
   // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -120,16 +120,16 @@
   function patchRenderer(THREE) {
     const proto = THREE.WebGLRenderer.prototype;
 
-    if (proto.__framedoctorPatched) return;  // idempotent
-    proto.__framedoctorPatched = true;
+    if (proto.__renderscopePatched) return;  // idempotent
+    proto.__renderscopePatched = true;
 
     const originalRender = proto.render;
 
-    proto.render = function framedoctorRender(scene, camera) {
+    proto.render = function renderscopeRender(scene, camera) {
       // Register this renderer instance
       if (!state.renderers.has(this)) {
         state.renderers.add(this);
-        console.log('[FrameDoctor] WebGLRenderer instance detected');
+        console.log('[RenderScope] WebGLRenderer instance detected');
       }
 
       // Call original
@@ -143,7 +143,7 @@
       recordFrame(frameTime, this, scene, camera);
     };
 
-    console.log('[FrameDoctor] WebGLRenderer.prototype.render patched ✓');
+    console.log('[RenderScope] WebGLRenderer.prototype.render patched ✓');
   }
 
   // ─── Shader Interception ────────────────────────────────────────────────────
@@ -153,8 +153,8 @@
    * We intercept the compiled shader source and run shaderAnalyzer on it.
    */
   function patchMaterial(material) {
-    if (!material || material.__framedoctorPatched) return;
-    material.__framedoctorPatched = true;
+    if (!material || material.__renderscopePatched) return;
+    material.__renderscopePatched = true;
 
     const originalHook = material.onBeforeCompile;
 
@@ -169,8 +169,8 @@
 
       // Schedule analysis asynchronously (don't block compilation)
       setTimeout(() => {
-        if (window.__FrameDoctor?.analyzeShaderProgram) {
-          const report = window.__FrameDoctor.analyzeShaderProgram(
+        if (window.__RenderScope?.analyzeShaderProgram) {
+          const report = window.__RenderScope.analyzeShaderProgram(
             shader.vertexShader,
             shader.fragmentShader,
             matName
@@ -250,14 +250,14 @@
       // Patch new materials (scene may have changed)
       patchSceneMaterials(scene);
 
-      if (window.__FrameDoctor?.analyzeScene) {
-        const { objects, totals } = window.__FrameDoctor.analyzeScene(scene, renderer);
+      if (window.__RenderScope?.analyzeScene) {
+        const { objects, totals } = window.__RenderScope.analyzeScene(scene, renderer);
 
         const shaders = Object.values(state.shaderReports);
 
         let warnings = [];
-        if (window.__FrameDoctor?.generateWarnings) {
-          warnings = window.__FrameDoctor.generateWarnings({ metrics, totals, objects, shaders });
+        if (window.__RenderScope?.generateWarnings) {
+          warnings = window.__RenderScope.generateWarnings({ metrics, totals, objects, shaders });
         }
 
         snapshot = { objects, totals, shaders, warnings, timestamp: Date.now() };
@@ -267,7 +267,7 @@
 
     // Build the full payload
     const payload = {
-      source: 'framedoctor-content',
+      source: 'renderscope-content',
       type: 'frame-update',
       metrics,
       spikes: [...state.spikes],
@@ -328,7 +328,7 @@
   // ─── Commands from DevTools Panel ───────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message) => {
-    if (!message || message.target !== 'framedoctor-content') return;
+    if (!message || message.target !== 'renderscope-content') return;
 
     switch (message.command) {
       case 'start-profiling':
@@ -375,7 +375,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `framedoctor-report-${Date.now()}.json`;
+    a.download = `renderscope-report-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -383,41 +383,41 @@
   // ─── WebGL Context Loss Handling ─────────────────────────────────────────────
 
   window.addEventListener('webglcontextlost', (e) => {
-    console.warn('[FrameDoctor] WebGL context lost — pausing profiling');
+    console.warn('[RenderScope] WebGL context lost — pausing profiling');
     state.profiling = false;
     try {
       chrome.runtime.sendMessage({
-        source: 'framedoctor-content',
+        source: 'renderscope-content',
         type: 'context-lost',
       });
     } catch (_) {}
   }, false);
 
   window.addEventListener('webglcontextrestored', () => {
-    console.log('[FrameDoctor] WebGL context restored — resuming profiling');
+    console.log('[RenderScope] WebGL context restored — resuming profiling');
     state.profiling = true;
   }, false);
 
   // ─── Boot ────────────────────────────────────────────────────────────────────
 
   async function boot() {
-    console.log('[FrameDoctor] Content script booting…');
+    console.log('[RenderScope] Content script booting…');
 
-    // Inject core modules (they attach to window.__FrameDoctor)
+    // Inject core modules (they attach to window.__RenderScope)
     await injectScript('core/analyzer.js');
     await injectScript('core/shaderAnalyzer.js');
     await injectScript('core/warnings.js');
 
-    console.log('[FrameDoctor] Core modules loaded');
+    console.log('[RenderScope] Core modules loaded');
 
     // Wait for Three.js to appear
     const THREE = await waitForThree();
 
     if (!THREE) {
-      console.warn('[FrameDoctor] THREE.js not detected on this page — no profiling active');
+      console.warn('[RenderScope] THREE.js not detected on this page — no profiling active');
       try {
         chrome.runtime.sendMessage({
-          source: 'framedoctor-content',
+          source: 'renderscope-content',
           type: 'three-not-detected',
         });
       } catch (_) {}
@@ -425,7 +425,7 @@
     }
 
     state.threeDetected = true;
-    console.log(`[FrameDoctor] THREE.js r${THREE.REVISION} detected ✓`);
+    console.log(`[RenderScope] THREE.js r${THREE.REVISION} detected ✓`);
 
     // Patch the renderer prototype before any instances are created
     patchRenderer(THREE);
@@ -447,7 +447,7 @@
     // Notify panel that Three.js is ready
     try {
       chrome.runtime.sendMessage({
-        source: 'framedoctor-content',
+        source: 'renderscope-content',
         type: 'three-detected',
         revision: THREE.REVISION,
       });

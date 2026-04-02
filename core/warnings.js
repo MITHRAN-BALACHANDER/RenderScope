@@ -1,5 +1,5 @@
 /**
- * FrameDoctor — Smart Warnings Engine (core/warnings.js)
+ * RenderScope — Smart Warnings Engine (core/warnings.js)
  *
  * PURPOSE:
  *   Given a snapshot of frame metrics + scene analysis, produce a ranked
@@ -316,7 +316,7 @@ function generateWarnings(snapshot) {
       }
     } catch (err) {
       // Never let a buggy rule crash the profiler
-      console.warn(`[FrameDoctor] Warning rule "${rule.id}" threw:`, err);
+      console.warn(`[RenderScope] Warning rule "${rule.id}" threw:`, err);
     }
   }
 
@@ -328,6 +328,6 @@ function generateWarnings(snapshot) {
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────
-window.__FrameDoctor = window.__FrameDoctor || {};
-window.__FrameDoctor.generateWarnings = generateWarnings;
-window.__FrameDoctor.THRESHOLDS = THRESHOLDS;
+window.__RenderScope = window.__RenderScope || {};
+window.__RenderScope.generateWarnings = generateWarnings;
+window.__RenderScope.THRESHOLDS = THRESHOLDS;

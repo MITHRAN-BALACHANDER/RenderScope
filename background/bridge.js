@@ -1,5 +1,5 @@
 /**
- * FrameDoctor — Background Service Worker (bridge.js)
+ * RenderScope — Background Service Worker (bridge.js)
  *
  * Responsibility: Act as a reliable messaging relay between:
  *   - Content Script  (runs in the inspected page's context)
@@ -19,14 +19,14 @@ const devtoolsPorts = new Map();
 // ─── DevTools Panel Connections ──────────────────────────────────────────────
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (!port.name.startsWith('framedoctor-devtools-')) return;
+  if (!port.name.startsWith('renderscope-devtools-')) return;
 
-  // Port name encodes the inspected tab ID: "framedoctor-devtools-<tabId>"
+  // Port name encodes the inspected tab ID: "renderscope-devtools-<tabId>"
   const tabId = parseInt(port.name.split('-').pop(), 10);
   if (isNaN(tabId)) return;
 
   devtoolsPorts.set(tabId, port);
-  console.log(`[FrameDoctor Bridge] DevTools panel connected for tab ${tabId}`);
+  console.log(`[RenderScope Bridge] DevTools panel connected for tab ${tabId}`);
 
   // Forward commands from DevTools panel → Content Script
   port.onMessage.addListener((message) => {
@@ -38,15 +38,15 @@ chrome.runtime.onConnect.addListener((port) => {
   // Cleanup on panel disconnect
   port.onDisconnect.addListener(() => {
     devtoolsPorts.delete(tabId);
-    console.log(`[FrameDoctor Bridge] DevTools panel disconnected for tab ${tabId}`);
+    console.log(`[RenderScope Bridge] DevTools panel disconnected for tab ${tabId}`);
   });
 });
 
 // ─── Messages from Content Script ────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Only relay messages tagged for FrameDoctor
-  if (!message || message.source !== 'framedoctor-content') return false;
+  // Only relay messages tagged for RenderScope
+  if (!message || message.source !== 'renderscope-content') return false;
 
   const tabId = sender.tab?.id;
   if (tabId == null) return false;

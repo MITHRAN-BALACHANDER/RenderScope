@@ -1,5 +1,5 @@
 /**
- * FrameDoctor — DevTools Panel Logic (devtools/panel.js)
+ * RenderScope — DevTools Panel Logic (devtools/panel.js)
  *
  * EXECUTION CONTEXT: DevTools panel page (extension context).
  *
@@ -22,12 +22,12 @@
 const tabId = chrome.devtools.inspectedWindow.tabId;
 
 // Connect to background bridge
-let port = chrome.runtime.connect({ name: `framedoctor-devtools-${tabId}` });
+let port = chrome.runtime.connect({ name: `renderscope-devtools-${tabId}` });
 
 // Reconnect on disconnect (service worker can restart)
 port.onDisconnect.addListener(() => {
   try {
-    port = chrome.runtime.connect({ name: `framedoctor-devtools-${tabId}` });
+    port = chrome.runtime.connect({ name: `renderscope-devtools-${tabId}` });
     port.onMessage.addListener(handleContentMessage);
     port.onDisconnect.addListener(arguments.callee);
   } catch (_) {}
@@ -140,7 +140,7 @@ const DOM = {
 // ─── Message Handler ─────────────────────────────────────────────────────────
 
 function handleContentMessage(message) {
-  if (!message || message.source !== 'framedoctor-content') return;
+  if (!message || message.source !== 'renderscope-content') return;
 
   switch (message.type) {
     case 'three-detected':
@@ -397,11 +397,11 @@ function renderScene() {
       // Toggle: if already highlighted, unhighlight
       if (btn.classList.contains('active')) {
         btn.classList.remove('active');
-        sendToContent({ target: 'framedoctor-content', command: 'unhighlight-object' });
+        sendToContent({ target: 'renderscope-content', command: 'unhighlight-object' });
       } else {
         DOM.sceneTableBody.querySelectorAll('.btn-highlight.active').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        sendToContent({ target: 'framedoctor-content', command: 'highlight-object', uuid });
+        sendToContent({ target: 'renderscope-content', command: 'highlight-object', uuid });
       }
       e.stopPropagation();
     });
@@ -659,12 +659,12 @@ DOM.btnToggle.addEventListener('click', () => {
   DOM.iconPlay.style.display   = state.profiling ? 'none'  : 'block';
   DOM.iconPause.style.display  = state.profiling ? 'block' : 'none';
   DOM.profilingLabel.textContent = state.profiling ? 'Pause' : 'Resume';
-  sendToContent({ target: 'framedoctor-content', command: state.profiling ? 'start-profiling' : 'stop-profiling' });
+  sendToContent({ target: 'renderscope-content', command: state.profiling ? 'start-profiling' : 'stop-profiling' });
   updateStatus();
 });
 
 DOM.btnExport.addEventListener('click', () => {
-  sendToContent({ target: 'framedoctor-content', command: 'export-report' });
+  sendToContent({ target: 'renderscope-content', command: 'export-report' });
 });
 
 DOM.sceneSearch?.addEventListener('input', (e) => {

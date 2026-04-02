@@ -1,5 +1,5 @@
 /**
- * FrameDoctor — Shader Analyzer (core/shaderAnalyzer.js)
+ * RenderScope — Shader Analyzer (core/shaderAnalyzer.js)
  *
  * PURPOSE:
  *   Intercept, analyze, and score GLSL shaders for performance issues.
@@ -173,5 +173,5 @@ function analyzeShaderProgram(vertexSrc, fragmentSrc, materialName) {
 }
 
 // ─── Export ──────────────────────────────────────────────────────────────────
-window.__FrameDoctor = window.__FrameDoctor || {};
-window.__FrameDoctor.analyzeShaderProgram = analyzeShaderProgram;
+window.__RenderScope = window.__RenderScope || {};
+window.__RenderScope.analyzeShaderProgram = analyzeShaderProgram;

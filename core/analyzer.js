@@ -1,5 +1,5 @@
 /**
- * FrameDoctor — Core Scene Analyzer (core/analyzer.js)
+ * RenderScope — Core Scene Analyzer (core/analyzer.js)
  *
  * PURPOSE:
  *   Traverse a Three.js scene graph and extract per-object cost data.
@@ -190,5 +190,5 @@ function computeObjectCost({ triangles, textureCount, castShadow, skinned, morph
 
 // ─── Export for use in profiler.js ───────────────────────────────────────────
 // (Content scripts don't use ES module syntax; attach to window namespace)
-window.__FrameDoctor = window.__FrameDoctor || {};
-window.__FrameDoctor.analyzeScene = analyzeScene;
+window.__RenderScope = window.__RenderScope || {};
+window.__RenderScope.analyzeScene = analyzeScene;
