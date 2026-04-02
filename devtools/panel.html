@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FrameDoctor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="header-brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 2L2 7l10 5 10-5-10-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M2 17l10 5 10-5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand-name">FrameDoctor</span>
+      <span class="brand-version">v1.0</span>
+    </div>
+
+    <div class="header-status">
+      <div class="status-indicator" id="statusIndicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span class="status-text" id="statusText">Waiting for Three.js…</span>
+      </div>
+      <span class="three-version" id="threeVersion"></span>
+    </div>
+
+    <div class="header-controls">
+      <button class="btn btn-ghost btn-sm" id="btnToggleProfiling" title="Pause/Resume profiling">
+        <svg id="iconPlay" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+          <path d="M11 8L5 4v8l6-4z"/>
+        </svg>
+        <svg id="iconPause" viewBox="0 0 16 16" fill="currentColor" width="12" height="12" style="display:none">
+          <rect x="4" y="3" width="3" height="10"/>
+          <rect x="9" y="3" width="3" height="10"/>
+        </svg>
+        <span id="profilingLabel">Resume</span>
+      </button>
+      <button class="btn btn-ghost btn-sm" id="btnExport" title="Export performance report as JSON">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+          <path d="M8 1v9M4 6l4 4 4-4M3 13h10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+        </svg>
+        Export
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Tab Bar ────────────────────────────────────────────────── -->
+  <nav class="tab-bar" role="tablist">
+    <button class="tab active" id="tab-overview"  role="tab" data-tab="overview">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="13" height="13">
+        <rect x="1" y="1" width="6" height="6" rx="1"/>
+        <rect x="9" y="1" width="6" height="6" rx="1"/>
+        <rect x="1" y="9" width="6" height="6" rx="1"/>
+        <rect x="9" y="9" width="6" height="6" rx="1"/>
+      </svg>
+      Overview
+    </button>
+    <button class="tab" id="tab-scene" role="tab" data-tab="scene">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="13" height="13">
+        <path d="M8 1l5 3v6l-5 3-5-3V4z"/>
+        <path d="M8 1v12M3 4l5 3 5-3"/>
+      </svg>
+      Scene
+    </button>
+    <button class="tab" id="tab-shaders" role="tab" data-tab="shaders">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="13" height="13">
+        <path d="M4 2l3 4-3 4M9 10h4"/>
+      </svg>
+      Shaders
+    </button>
+    <button class="tab" id="tab-warnings" role="tab" data-tab="warnings">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="13" height="13">
+        <path d="M8 2L1 14h14L8 2z"/>
+        <path d="M8 7v3M8 11.5v.5"/>
+      </svg>
+      Warnings
+      <span class="badge" id="warningsBadge" style="display:none">0</span>
+    </button>
+    <button class="tab" id="tab-timeline" role="tab" data-tab="timeline">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="13" height="13">
+        <polyline points="1,12 4,6 7,9 10,4 13,7 15,3"/>
+      </svg>
+      Timeline
+    </button>
+  </nav>
+
+  <!-- ── Tab Panels ─────────────────────────────────────────────── -->
+  <main class="tab-content">
+
+    <!-- ──────────── OVERVIEW TAB ──────────────────────────────── -->
+    <section class="panel active" id="panel-overview">
+
+      <!-- Metric Cards Row -->
+      <div class="metric-grid">
+        <div class="metric-card" id="card-fps">
+          <div class="metric-label">FPS</div>
+          <div class="metric-value" id="metFps">—</div>
+          <div class="metric-sub" id="metFpsSub">frame time</div>
+        </div>
+        <div class="metric-card" id="card-drawcalls">
+          <div class="metric-label">Draw Calls</div>
+          <div class="metric-value" id="metDrawCalls">—</div>
+          <div class="metric-sub">per frame</div>
+        </div>
+        <div class="metric-card" id="card-triangles">
+          <div class="metric-label">Triangles</div>
+          <div class="metric-value" id="metTriangles">—</div>
+          <div class="metric-sub">rendered</div>
+        </div>
+        <div class="metric-card" id="card-textures">
+          <div class="metric-label">Textures</div>
+          <div class="metric-value" id="metTextures">—</div>
+          <div class="metric-sub">unique</div>
+        </div>
+        <div class="metric-card" id="card-geometries">
+          <div class="metric-label">Geometries</div>
+          <div class="metric-value" id="metGeometries">—</div>
+          <div class="metric-sub">unique</div>
+        </div>
+        <div class="metric-card" id="card-meshes">
+          <div class="metric-label">Meshes</div>
+          <div class="metric-value" id="metMeshes">—</div>
+          <div class="metric-sub">in scene</div>
+        </div>
+      </div>
+
+      <!-- Mini frame-time chart -->
+      <div class="section-header">
+        <span>Frame Time (last 120 frames)</span>
+        <div class="legend-row">
+          <span class="legend-dot legend-ok"></span><span>≤16ms</span>
+          <span class="legend-dot legend-warn"></span><span>≤33ms</span>
+          <span class="legend-dot legend-err"></span><span>>33ms</span>
+        </div>
+      </div>
+      <div class="chart-container">
+        <canvas id="frameChart" width="800" height="80"></canvas>
+        <div class="chart-targets">
+          <span class="target-line-label" style="bottom: calc(100% * (16/50));">16ms</span>
+          <span class="target-line-label" style="bottom: calc(100% * (33/50));">33ms</span>
+        </div>
+      </div>
+
+      <!-- Recent Spikes -->
+      <div class="section-header">
+        <span>Frame Spikes (&gt;33ms)</span>
+        <span class="badge-outline" id="spikeCount">0 recorded</span>
+      </div>
+      <div class="spike-list" id="spikeList">
+        <div class="empty-state">No spikes detected yet</div>
+      </div>
+
+    </section>
+
+    <!-- ──────────── SCENE TAB ─────────────────────────────────── -->
+    <section class="panel" id="panel-scene">
+
+      <div class="toolbar">
+        <div class="search-box">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="13" height="13">
+            <circle cx="7" cy="7" r="5"/>
+            <path d="M11 11l3 3"/>
+          </svg>
+          <input type="text" id="sceneSearch" placeholder="Filter objects…" autocomplete="off">
+        </div>
+        <div class="sort-controls">
+          <label>Sort by</label>
+          <select id="sceneSort">
+            <option value="cost">Cost</option>
+            <option value="triangles">Triangles</option>
+            <option value="textures">Textures</option>
+            <option value="name">Name</option>
+          </select>
+        </div>
+        <label class="toggle-label">
+          <input type="checkbox" id="showInvisible"> Show hidden
+        </label>
+      </div>
+
+      <!-- Totals bar -->
+      <div class="totals-bar" id="sceneTotalsBar">
+        <span id="sceneObjCount">— objects</span>
+        <span class="sep">•</span>
+        <span id="sceneTotalTris">— triangles</span>
+        <span class="sep">•</span>
+        <span id="sceneTotalTex">— textures</span>
+        <span class="sep">•</span>
+        <span id="sceneShadowLights">— shadow lights</span>
+      </div>
+
+      <!-- Object table -->
+      <div class="table-wrapper">
+        <table class="data-table" id="sceneTable">
+          <thead>
+            <tr>
+              <th>Object</th>
+              <th>Type</th>
+              <th class="num">Triangles</th>
+              <th class="num">Textures</th>
+              <th>Material</th>
+              <th class="num">Cost</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="sceneTableBody">
+            <tr class="empty-row"><td colspan="7" class="empty-state">Waiting for scene data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ──────────── SHADERS TAB ───────────────────────────────── -->
+    <section class="panel" id="panel-shaders">
+
+      <div class="section-header" style="margin-top: 0;">
+        <span>Intercepted Shaders</span>
+        <span class="hint-text">Shaders are captured when materials compile for the first time</span>
+      </div>
+
+      <div id="shaderList" class="shader-list">
+        <div class="empty-state">No shaders intercepted yet.<br>Shaders are captured on first render of each material.</div>
+      </div>
+
+    </section>
+
+    <!-- ──────────── WARNINGS TAB ─────────────────────────────── -->
+    <section class="panel" id="panel-warnings">
+
+      <div class="toolbar" style="justify-content: flex-end; gap: 8px;">
+        <label class="toggle-label">
+          <input type="checkbox" id="filterErrors" checked> Errors
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" id="filterWarnings" checked> Warnings
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" id="filterInfo" checked> Info
+        </label>
+      </div>
+
+      <div id="warningsList" class="warnings-list">
+        <div class="empty-state">No warnings yet — great job, or scene hasn't rendered yet.</div>
+      </div>
+
+    </section>
+
+    <!-- ──────────── TIMELINE TAB ─────────────────────────────── -->
+    <section class="panel" id="panel-timeline">
+
+      <div class="section-header" style="margin-top:0;">
+        <span>Frame Time Timeline</span>
+        <div class="timeline-controls">
+          <button class="btn btn-ghost btn-sm" id="btnClearTimeline">Clear</button>
+        </div>
+      </div>
+
+      <div class="chart-container large">
+        <canvas id="timelineChart" width="800" height="160"></canvas>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-pill">
+          <span class="stat-label">Min</span>
+          <span class="stat-value mono" id="statMin">—</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Avg</span>
+          <span class="stat-value mono" id="statAvg">—</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Max</span>
+          <span class="stat-value mono" id="statMax">—</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">P95</span>
+          <span class="stat-value mono" id="statP95">—</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Spikes</span>
+          <span class="stat-value mono" id="statSpikes">0</span>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <script src="panel.js"></script>
+</body>
+</html>
