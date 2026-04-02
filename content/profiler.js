@@ -1,459 +1,109 @@
 /**
- * RenderScope — Content Script / Profiler (content/profiler.js)
+ * RenderScope — Isolated-World Content Script (content/profiler.js)
  *
- * EXECUTION CONTEXT: The inspected webpage (document_start).
+ * EXECUTION CONTEXT: Chrome Extension ISOLATED world (document_start).
+ *
+ * This script is intentionally thin. All Three.js detection, renderer
+ * patching, and data collection lives in content/page-hook.js which is
+ * injected into the page's MAIN JavaScript world so it can see bundled
+ * Three.js (webpack, Vite, Next.js, etc.) that are invisible to this
+ * isolated context.
  *
  * RESPONSIBILITIES:
- *   1. Detect Three.js (global window.THREE or module-exported renderer)
- *   2. Monkey-patch THREE.WebGLRenderer.prototype.render to intercept frames
- *   3. Track per-frame metrics: draw calls, triangles, frame time, FPS
- *   4. Traverse scene graph using core/analyzer.js
- *   5. Intercept materials via onBeforeCompile for shader analysis
- *   6. Generate warnings via core/warnings.js
- *   7. Send structured snapshots to the background bridge via chrome.runtime.sendMessage
- *   8. Listen for commands from DevTools panel (highlight object, start/stop profiling)
- *
- * DATA FLOW:
- *   profiler.js → chrome.runtime.sendMessage → bridge.js → devtools port → panel.js
- *   panel.js    → chrome.tabs.sendMessage    → bridge.js → profiler.js (commands)
- *
- * INJECTION STRATEGY:
- *   The profiler relies on THREE being a global. For apps that import THREE via
- *   ES modules (no global), we poll for a patched renderer instance via a
- *   known detection hook.
+ *   1. Install an early canvas-flag hook synchronously (inline <script>),
+ *      before page scripts run, so we know if WebGL was used.
+ *   2. Inject core analysis modules (they attach to window.__RenderScope).
+ *   3. Inject page-hook.js into the MAIN world.
+ *   4. Bridge window.postMessage ↔ chrome.runtime.sendMessage:
+ *        page-hook.js → postMessage({ dir:'page-to-ext' }) → relay → bridge.js → panel.js
+ *        panel.js → bridge.js → chrome.tabs.sendMessage → relay → postMessage({ dir:'ext-to-page' }) → page-hook.js
  */
 
 (function () {
   'use strict';
 
-  // ─── Guard: run once ────────────────────────────────────────────────────────
   if (window.__RenderScopeActive) return;
   window.__RenderScopeActive = true;
 
-  // ─── State ──────────────────────────────────────────────────────────────────
+  // Note: No inline script injection here — that would violate strict Content Security
+  // Policies on many production sites. The canvas getContext hook is installed by
+  // page-hook.js (MAIN world) which loads immediately via injectScript() below.
 
-  const state = {
-    profiling: true,           // can be toggled by panel
-    threeDetected: false,
-    renderers: new Set(),       // track multiple renderers
 
-    // Per-frame accumulators
-    frameCount: 0,
-    lastFrameTime: performance.now(),
-    frameTimes: [],             // ring buffer of last 60 frame durations (ms)
-    MAX_FRAME_HISTORY: 120,
-
-    // Scene snapshot (refreshed every N frames)
-    sceneSnapshot: null,
-    SCENE_REFRESH_INTERVAL: 30, // frames between full scene traversals
-
-    // Shader reports (keyed by material uuid, built up over time)
-    shaderReports: {},
-
-    // Object highlight state
-    highlightedObject: null,
-    originalEmissive: null,
-
-    // Spike detection
-    spikes: [],                 // last 10 spike events
-    MAX_SPIKES: 10,
-  };
-
-  // ─── Load core modules via injected scripts ─────────────────────────────────
-  // We inject analyzer.js, shaderAnalyzer.js, warnings.js into the page context
-  // so they can access window.THREE directly.
+  // ─── Step 1: Script injector ─────────────────────────────────────────────────
+  // Injects files from the extension into the page as <script> tags.
+  // They run in the MAIN world and share window with the page.
+  // Files MUST be listed in web_accessible_resources in manifest.json.
 
   function injectScript(path) {
     return new Promise((resolve) => {
-      const script = document.createElement('script');
-      script.src = chrome.runtime.getURL(path);
-      script.onload = () => { script.remove(); resolve(); };
-      script.onerror = () => { script.remove(); resolve(); };  // graceful fail
-      (document.head || document.documentElement).appendChild(script);
-    });
-  }
-
-  // ─── Three.js Detection ─────────────────────────────────────────────────────
-
-  /**
-   * Attempt to detect THREE.js in the page.
-   * Handles: window.THREE (CDN / direct script), deferred loading.
-   */
-  function detectThree() {
-    // Case 1: standard CDN global
-    if (window.THREE?.WebGLRenderer) {
-      return window.THREE;
-    }
-
-    // Case 2: some bundlers expose r3f or other wrappers — look for a live renderer
-    // We'll also detect it via the monkey-patch in initPatching()
-    return null;
-  }
-
-  /**
-   * Wait for THREE to become available with exponential backoff.
-   * Gives up after ~15 seconds to avoid running forever.
-   */
-  function waitForThree(maxWaitMs = 15_000) {
-    const start = Date.now();
-    return new Promise((resolve) => {
-      function check(delay) {
-        const THREE = detectThree();
-        if (THREE) { resolve(THREE); return; }
-        if (Date.now() - start > maxWaitMs) { resolve(null); return; }
-        setTimeout(() => check(Math.min(delay * 1.5, 2000)), delay);
+      const url = chrome.runtime.getURL(path);
+      if (!url || url.includes('chrome-extension://invalid')) {
+        console.error(
+          `[RenderScope] Script injection failed for "${path}". ` +
+          'Add it to "web_accessible_resources" in manifest.json.'
+        );
+        resolve();
+        return;
       }
-      check(100);
-    });
-  }
-
-  // ─── Monkey-Patching ────────────────────────────────────────────────────────
-
-  /**
-   * Patch THREE.WebGLRenderer.prototype.render.
-   * Wraps the original render call to:
-   *   - Measure frame time
-   *   - Capture renderer info (draw calls, triangles etc.)
-   *   - Periodically trigger scene + shader analysis
-   *   - Send snapshots to the extension
-   */
-  function patchRenderer(THREE) {
-    const proto = THREE.WebGLRenderer.prototype;
-
-    if (proto.__renderscopePatched) return;  // idempotent
-    proto.__renderscopePatched = true;
-
-    const originalRender = proto.render;
-
-    proto.render = function renderscopeRender(scene, camera) {
-      // Register this renderer instance
-      if (!state.renderers.has(this)) {
-        state.renderers.add(this);
-        console.log('[RenderScope] WebGLRenderer instance detected');
-      }
-
-      // Call original
-      const t0 = performance.now();
-      originalRender.call(this, scene, camera);
-      const t1 = performance.now();
-
-      if (!state.profiling) return;
-
-      const frameTime = t1 - t0;
-      recordFrame(frameTime, this, scene, camera);
-    };
-
-    console.log('[RenderScope] WebGLRenderer.prototype.render patched ✓');
-  }
-
-  // ─── Shader Interception ────────────────────────────────────────────────────
-
-  /**
-   * Attach an onBeforeCompile hook to a material.
-   * We intercept the compiled shader source and run shaderAnalyzer on it.
-   */
-  function patchMaterial(material) {
-    if (!material || material.__renderscopePatched) return;
-    material.__renderscopePatched = true;
-
-    const originalHook = material.onBeforeCompile;
-
-    material.onBeforeCompile = function (shader, renderer) {
-      // Call any existing hook first (important: don't break user shaders)
-      if (originalHook) originalHook.call(this, shader, renderer);
-
-      // Analyze the final shader source after user hooks have modified it
-      // We defer slightly to let the shader compilation finish
-      const matName = material.name || material.type || 'unnamed';
-      const matUuid = material.uuid;
-
-      // Schedule analysis asynchronously (don't block compilation)
-      setTimeout(() => {
-        if (window.__RenderScope?.analyzeShaderProgram) {
-          const report = window.__RenderScope.analyzeShaderProgram(
-            shader.vertexShader,
-            shader.fragmentShader,
-            matName
-          );
-          state.shaderReports[matUuid] = report;
-        }
-      }, 0);
-    };
-
-    // For materials already compiled (no onBeforeCompile triggered after the fact),
-    // we can't retroactively get the GLSL. We'll note this material exists
-    // and show partial info.
-  }
-
-  /**
-   * Patch all materials in a scene so we can intercept their shaders.
-   */
-  function patchSceneMaterials(scene) {
-    scene.traverse((object) => {
-      const mats = Array.isArray(object.material) ? object.material : [object.material];
-      for (const mat of mats) {
-        if (mat) patchMaterial(mat);
-      }
-    });
-  }
-
-  // ─── Frame Recording ────────────────────────────────────────────────────────
-
-  let framesSinceLastSnapshot = 0;
-
-  function recordFrame(frameTime, renderer, scene, camera) {
-    state.frameCount++;
-    framesSinceLastSnapshot++;
-
-    // Maintain ring buffer of frame times
-    state.frameTimes.push(frameTime);
-    if (state.frameTimes.length > state.MAX_FRAME_HISTORY) {
-      state.frameTimes.shift();
-    }
-
-    // Detect frame spikes
-    if (frameTime > 33) {  // >33ms = <30fps
-      const spike = {
-        timestamp: performance.now(),
-        frameTime: frameTime.toFixed(2),
-        drawCalls: renderer.info?.render?.calls ?? 0,
-        triangles: renderer.info?.render?.triangles ?? 0,
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload  = () => { s.remove(); resolve(); };
+      s.onerror = () => {
+        console.error(`[RenderScope] Failed to load "${path}".`);
+        s.remove();
+        resolve();
       };
-      state.spikes.unshift(spike);
-      if (state.spikes.length > state.MAX_SPIKES) state.spikes.pop();
-    }
+      (document.head || document.documentElement).appendChild(s);
+    });
+  }
 
-    // FPS: average over the last 60 frames
-    const recentTimes = state.frameTimes.slice(-60);
-    const avgFrameTime = recentTimes.reduce((a, b) => a + b, 0) / recentTimes.length;
-    const fps = 1000 / avgFrameTime;
+  // ─── Step 2: postMessage relay ───────────────────────────────────────────────
+  // page-hook.js  →  postMessage({ __rs, dir:'page-to-ext', ... })
+  //               →  (this listener)
+  //               →  chrome.runtime.sendMessage(payload)
+  //               →  bridge.js  →  panel.js
 
-    // Render info from Three.js (accurate, updated by render())
-    const info = renderer.info?.render ?? {};
-
-    const metrics = {
-      fps: Math.round(fps * 10) / 10,
-      frameTime: Math.round(frameTime * 100) / 100,
-      avgFrameTime: Math.round(avgFrameTime * 100) / 100,
-      drawCalls: info.calls ?? 0,
-      triangles: info.triangles ?? 0,
-      points: info.points ?? 0,
-      lines: info.lines ?? 0,
-      frameCount: state.frameCount,
-    };
-
-    // Scene + shader analysis (every N frames to keep overhead low)
-    let snapshot = state.sceneSnapshot;
-    if (framesSinceLastSnapshot >= state.SCENE_REFRESH_INTERVAL) {
-      framesSinceLastSnapshot = 0;
-
-      // Patch new materials (scene may have changed)
-      patchSceneMaterials(scene);
-
-      if (window.__RenderScope?.analyzeScene) {
-        const { objects, totals } = window.__RenderScope.analyzeScene(scene, renderer);
-
-        const shaders = Object.values(state.shaderReports);
-
-        let warnings = [];
-        if (window.__RenderScope?.generateWarnings) {
-          warnings = window.__RenderScope.generateWarnings({ metrics, totals, objects, shaders });
-        }
-
-        snapshot = { objects, totals, shaders, warnings, timestamp: Date.now() };
-        state.sceneSnapshot = snapshot;
-      }
-    }
-
-    // Build the full payload
-    const payload = {
-      source: 'renderscope-content',
-      type: 'frame-update',
-      metrics,
-      spikes: [...state.spikes],
-      frameTimes: [...state.frameTimes],
-      scene: snapshot,
-    };
-
-    // Send to background bridge → DevTools panel
+  window.addEventListener('message', (e) => {
+    if (!e.data || !e.data.__rs || e.data.dir !== 'page-to-ext') return;
+    const { __rs, dir, ...payload } = e.data;
     try {
       chrome.runtime.sendMessage(payload);
-    } catch (err) {
-      // Extension context invalidated (hot reload etc.) — re-check silently
-    }
-  }
-
-  // ─── Object Highlighting ────────────────────────────────────────────────────
-
-  /**
-   * Highlight a scene object by its UUID.
-   * Temporarily changes its emissive color to bright magenta.
-   */
-  function highlightObject(uuid) {
-    // Restore previous highlight first
-    unhighlightObject();
-
-    for (const renderer of state.renderers) {
-      // We need the scene — we don't store a ref to it, so we search renderers
-      // The renderer itself doesn't expose the scene; we stored it in a WeakMap
-    }
-
-    // NOTE: object lookup is done in patchedRender via lastScene WeakRef
-    const obj = state.lastScene?.getObjectByProperty('uuid', uuid);
-    if (!obj) return;
-
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    state.highlightedObject = obj;
-    state.originalEmissive = mats.map(m => m.emissive?.clone?.() ?? null);
-
-    const HIGHLIGHT_COLOR = { r: 1, g: 0, b: 1 };
-    for (const mat of mats) {
-      if (mat.emissive) mat.emissive.setRGB(HIGHLIGHT_COLOR.r, HIGHLIGHT_COLOR.g, HIGHLIGHT_COLOR.b);
-    }
-  }
-
-  function unhighlightObject() {
-    if (!state.highlightedObject) return;
-    const obj = state.highlightedObject;
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    for (let i = 0; i < mats.length; i++) {
-      if (mats[i].emissive && state.originalEmissive[i]) {
-        mats[i].emissive.copy(state.originalEmissive[i]);
-      }
-    }
-    state.highlightedObject = null;
-    state.originalEmissive = null;
-  }
-
-  // ─── Commands from DevTools Panel ───────────────────────────────────────────
-
-  chrome.runtime.onMessage.addListener((message) => {
-    if (!message || message.target !== 'renderscope-content') return;
-
-    switch (message.command) {
-      case 'start-profiling':
-        state.profiling = true;
-        break;
-
-      case 'stop-profiling':
-        state.profiling = false;
-        break;
-
-      case 'highlight-object':
-        highlightObject(message.uuid);
-        break;
-
-      case 'unhighlight-object':
-        unhighlightObject();
-        break;
-
-      case 'request-snapshot':
-        // Force an immediate scene refresh
-        framesSinceLastSnapshot = state.SCENE_REFRESH_INTERVAL;
-        break;
-
-      case 'export-report':
-        exportReport();
-        break;
+    } catch (_) {
+      // Extension context invalidated (page reload, devtools closed, etc.)
     }
   });
 
-  // ─── Report Export ───────────────────────────────────────────────────────────
+  // ─── Step 3: Command relay ───────────────────────────────────────────────────
+  // bridge.js  →  chrome.tabs.sendMessage(tabId, { target:'renderscope-content', command, ... })
+  //            →  (this listener)
+  //            →  postMessage({ __rs, dir:'ext-to-page', ... })
+  //            →  page-hook.js handlePanelCommand()
 
-  function exportReport() {
-    const report = {
-      exportedAt: new Date().toISOString(),
-      url: window.location.href,
-      metrics: state.sceneSnapshot,
-      spikes: state.spikes,
-      shaders: Object.values(state.shaderReports),
-      frameTimes: state.frameTimes,
-    };
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.target !== 'renderscope-content') return;
+    window.postMessage({ __rs: true, dir: 'ext-to-page', ...message }, '*');
+  });
 
-    const json = JSON.stringify(report, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `renderscope-report-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  // ─── WebGL Context Loss Handling ─────────────────────────────────────────────
-
-  window.addEventListener('webglcontextlost', (e) => {
-    console.warn('[RenderScope] WebGL context lost — pausing profiling');
-    state.profiling = false;
-    try {
-      chrome.runtime.sendMessage({
-        source: 'renderscope-content',
-        type: 'context-lost',
-      });
-    } catch (_) {}
-  }, false);
-
-  window.addEventListener('webglcontextrestored', () => {
-    console.log('[RenderScope] WebGL context restored — resuming profiling');
-    state.profiling = true;
-  }, false);
-
-  // ─── Boot ────────────────────────────────────────────────────────────────────
+  // ─── Step 4: Boot ─────────────────────────────────────────────────────────────
 
   async function boot() {
-    console.log('[RenderScope] Content script booting…');
+    console.log('[RenderScope] Isolated profiler booting — injecting page hook…');
 
-    // Inject core modules (they attach to window.__RenderScope)
+    // Inject core analysis modules FIRST.
+    // They attach to window.__RenderScope in the MAIN world.
+    // page-hook.js depends on these being available.
     await injectScript('core/analyzer.js');
     await injectScript('core/shaderAnalyzer.js');
     await injectScript('core/warnings.js');
 
-    console.log('[RenderScope] Core modules loaded');
+    // Inject the MAIN-world worker. It does all Three.js work and
+    // sends results back via postMessage → this script → chrome.runtime.
+    await injectScript('content/page-hook.js');
 
-    // Wait for Three.js to appear
-    const THREE = await waitForThree();
-
-    if (!THREE) {
-      console.warn('[RenderScope] THREE.js not detected on this page — no profiling active');
-      try {
-        chrome.runtime.sendMessage({
-          source: 'renderscope-content',
-          type: 'three-not-detected',
-        });
-      } catch (_) {}
-      return;
-    }
-
-    state.threeDetected = true;
-    console.log(`[RenderScope] THREE.js r${THREE.REVISION} detected ✓`);
-
-    // Patch the renderer prototype before any instances are created
-    patchRenderer(THREE);
-
-    // Also intercept renderer *construction* so we can store a scene reference
-    const OriginalRenderer = THREE.WebGLRenderer;
-    THREE.WebGLRenderer = function (...args) {
-      const instance = new OriginalRenderer(...args);
-      // Wrap render to capture the scene reference
-      const orig = instance.render.bind(instance);
-      instance.render = function (scene, camera) {
-        state.lastScene = scene;
-        orig(scene, camera);
-      };
-      return instance;
-    };
-    THREE.WebGLRenderer.prototype = OriginalRenderer.prototype;
-
-    // Notify panel that Three.js is ready
-    try {
-      chrome.runtime.sendMessage({
-        source: 'renderscope-content',
-        type: 'three-detected',
-        revision: THREE.REVISION,
-      });
-    } catch (_) {}
+    console.log('[RenderScope] Page hook injected ✓');
   }
 
-  boot().catch(console.error);
+  boot().catch((err) => console.error('[RenderScope] Boot error:', err));
 
 })();
